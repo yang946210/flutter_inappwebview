@@ -855,6 +855,7 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
 
   @Override
   public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+    Log.i("============","2323");
     if (filePathCallback == null && filePathCallbackLegacy == null) {
       return true;
     }
