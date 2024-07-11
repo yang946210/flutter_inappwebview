@@ -22,7 +22,6 @@ import android.os.Parcelable;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -38,8 +37,6 @@ import android.webkit.WebView;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.RelativeLayout;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -50,7 +47,6 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import com.pichillilorenzo.flutter_inappwebview.InAppWebViewFileProvider;
-import com.pichillilorenzo.flutter_inappwebview.R;
 import com.pichillilorenzo.flutter_inappwebview.types.CreateWindowAction;
 import com.pichillilorenzo.flutter_inappwebview.in_app_browser.ActivityResultListener;
 import com.pichillilorenzo.flutter_inappwebview.in_app_browser.InAppBrowserDelegate;
@@ -70,10 +66,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import io.flutter.plugin.common.PluginRegistry;
 import io.reactivex.Flowable;
@@ -115,7 +109,7 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
   @Nullable
   private View mCustomView;
   @Nullable
-  private WebChromeClient.CustomViewCallback mCustomViewCallback;
+  private CustomViewCallback mCustomViewCallback;
   private int mOriginalOrientation;
   private int mOriginalSystemUiVisibility;
   @Nullable
@@ -858,7 +852,7 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
   @Override
   public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
     String[] acceptTypes = fileChooserParams.getAcceptTypes();
-    boolean allowMultiple = fileChooserParams.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE;
+    boolean allowMultiple = fileChooserParams.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE;
     boolean captureEnabled = fileChooserParams.isCaptureEnabled();
     return startPickerIntent(filePathCallback, acceptTypes, allowMultiple, captureEnabled);
   }
@@ -880,25 +874,33 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
         if (resultCode == RESULT_OK) {
           results = getSelectedFiles(data, resultCode);
         }
-
         if (filePathCallback != null) {
-          filePathCallback.onReceiveValue(results);
+          Log.i("=========压缩前：+" , getFileKbSizeFromUri(getActivity(), results[0]) / 1024 + " kb");
+          Uri[] finalResults = results;
+          compressImg(getActivity(),results,3*1024).subscribe(uri -> {
+            Log.i("=========压缩后：+" , getFileKbSizeFromUri(getActivity(), uri[0]) / 1024 + " kb");
+            filePathCallback.onReceiveValue(uri);
+          }, throwable -> {
+            filePathCallback.onReceiveValue(finalResults);
+          });
         }
         break;
 
       case PICKER_LEGACY:
         Log.i("============","signe");
-        Uri result = null;
+        Uri result;
         if (resultCode == RESULT_OK) {
           result = data != null ? data.getData() : getCapturedMediaFile();
+        } else {
+          result = null;
         }
-        if (filePathCallbackLegacy != null) {
+          if (filePathCallbackLegacy != null) {
           Log.i("=========压缩前：+" ,getFileKbSizeFromUri(getActivity(), result) / 1024 + " kb");
           compressImg(getActivity(),result,3*1024).subscribe(uri -> {
             Log.i("=========压缩后：+" , getFileKbSizeFromUri(getActivity(), uri) / 1024 + " kb");
             filePathCallbackLegacy.onReceiveValue(uri);
           }, throwable -> {
-            filePathCallbackLegacy.onReceiveValue(null);
+            filePathCallbackLegacy.onReceiveValue(result);
           });
         }
         break;
@@ -916,7 +918,7 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
     // we have one file selected
     if (data != null && data.getData() != null) {
       if (resultCode == RESULT_OK && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-        return WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+        return FileChooserParams.parseResult(resultCode, data);
       } else {
         return null;
       }
@@ -1383,6 +1385,40 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
               } catch (Exception e) {
                 return path;
               }
+            })
+            .observeOn(AndroidSchedulers.mainThread());
+  }
+
+  /**
+   *压缩阈值(这个值一下不压缩),单位KB
+   */
+  @SuppressLint("CheckResult")
+  public  Flowable<Uri[]> compressImg(Activity act, Uri[] uris, int maxThreshold) {
+    return Flowable.just(uris)
+            .observeOn(Schedulers.io())
+            .map(path -> {
+
+              try {
+                for (int i = 0; i < uris.length; i++) {
+                  String[] filePathColumn = {MediaStore.Images.Media.DATA};
+                  Cursor cursor = act.getContentResolver().query(uris[i], filePathColumn, null, null, null);
+                  cursor.moveToFirst();
+                  int columnIndex = cursor.getColumnIndex(filePathColumn[0]);
+                  String picturePath = cursor.getString(columnIndex);
+                  cursor.close();
+                  int finalI = i;
+                  List<File> files = Luban.with(act).load(picturePath).filter(s -> {
+                    try {
+                      return (getFileKbSizeFromUri(act, uris[finalI])/ 1024) > maxThreshold;
+                    } catch (Exception e) {
+                      throw Exceptions.propagate(e);
+                    }
+                  }).get();
+                  uris[i]=PickerFileProvider.getUriForFile(act, files.get(0));
+                }
+              } catch (Exception ignored) {
+              }
+              return uris;
             })
             .observeOn(AndroidSchedulers.mainThread());
   }
