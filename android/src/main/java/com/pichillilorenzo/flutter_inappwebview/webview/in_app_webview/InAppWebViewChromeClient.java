@@ -1,6 +1,7 @@
 package com.pichillilorenzo.flutter_inappwebview.webview.in_app_webview;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
@@ -8,6 +9,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -43,6 +45,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AlertDialog;
+import androidx.collection.CircularArray;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
@@ -68,10 +71,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import io.flutter.plugin.common.PluginRegistry;
+import io.reactivex.Flowable;
+import io.reactivex.android.schedulers.AndroidSchedulers;
+import io.reactivex.exceptions.Exceptions;
+import io.reactivex.schedulers.Schedulers;
+import top.zibin.luban.Luban;
 
 import static android.app.Activity.RESULT_OK;
 
@@ -122,6 +131,7 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
   private Uri videoOutputFileUri;
   @Nullable
   private Uri imageOutputFileUri;
+  private CircularArray<Object> items;
 
   public InAppWebViewChromeClient(@NonNull final InAppWebViewFlutterPlugin plugin,
                                   @NonNull InAppWebView inAppWebView, InAppBrowserDelegate inAppBrowserDelegate) {
@@ -853,9 +863,10 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
     return startPickerIntent(filePathCallback, acceptTypes, allowMultiple, captureEnabled);
   }
 
+  @SuppressLint("CheckResult")
   @Override
   public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
-    Log.i("============","2323");
+    Log.i("============","123");
     if (filePathCallback == null && filePathCallbackLegacy == null) {
       return true;
     }
@@ -876,12 +887,19 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
         break;
 
       case PICKER_LEGACY:
+        Log.i("============","signe");
         Uri result = null;
         if (resultCode == RESULT_OK) {
           result = data != null ? data.getData() : getCapturedMediaFile();
         }
         if (filePathCallbackLegacy != null) {
-          filePathCallbackLegacy.onReceiveValue(result);
+          Log.i("=========压缩前：+" ,getFileKbSizeFromUri(getActivity(), result) / 1024 + " kb");
+          compressImg(getActivity(),result,3*1024).subscribe(uri -> {
+            Log.i("=========压缩后：+" , getFileKbSizeFromUri(getActivity(), uri) / 1024 + " kb");
+            filePathCallbackLegacy.onReceiveValue(uri);
+          }, throwable -> {
+            filePathCallbackLegacy.onReceiveValue(null);
+          });
         }
         break;
     }
@@ -1337,4 +1355,56 @@ public class InAppWebViewChromeClient extends WebChromeClient implements PluginR
     inAppWebView = null;
     plugin = null;
   }
+
+  /**
+   *压缩阈值(这个值一下不压缩),单位KB
+   */
+  @SuppressLint("CheckResult")
+  public  Flowable<Uri> compressImg(Activity act, Uri uri, int maxThreshold) {
+    return Flowable.just(uri)
+            .observeOn(Schedulers.io())
+            .map(path -> {
+              try {
+                String[] filePathColumn = {MediaStore.Images.Media.DATA};
+                Cursor cursor = act.getContentResolver().query(uri, filePathColumn, null, null, null);
+                cursor.moveToFirst();
+                int columnIndex = cursor.getColumnIndex(filePathColumn[0]);
+                String picturePath = cursor.getString(columnIndex);
+                cursor.close();
+
+                List<File> files = Luban.with(act).load(picturePath).filter(s -> {
+                  try {
+                    return (getFileKbSizeFromUri(act, path)/ 1024) > maxThreshold;
+                  } catch (Exception e) {
+                    throw Exceptions.propagate(e);
+                  }
+                }).get();
+                return PickerFileProvider.getUriForFile(act, files.get(0));
+              } catch (Exception e) {
+                return path;
+              }
+            })
+            .observeOn(AndroidSchedulers.mainThread());
+  }
+
+  public  long getFileKbSizeFromUri(Context context, Uri uri) {
+    long fileSize = 0;
+    Cursor cursor = null;
+    try {
+      String[] projection = {MediaStore.MediaColumns.SIZE};
+      cursor = context.getContentResolver().query(uri, projection, null, null, null);
+      if (cursor != null && cursor.moveToFirst()) {
+        int sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE);
+        fileSize = cursor.getLong(sizeIndex);
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    } finally {
+      if (cursor != null) {
+        cursor.close();
+      }
+    }
+    return fileSize;
+  }
+
 }
